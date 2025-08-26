@@ -25,6 +25,12 @@ uint64_t msg_cnt = 0;
 /** Union to convert uint32_t into uint8_t array */
 longlong_byte_u convert_value;
 
+/** Flag if OLED was found */
+bool has_rak1921 = false;
+
+/** Buffer for OLED output */
+char line_str[256];
+
 /**
    @brief Application specific setup functions
 
@@ -78,6 +84,9 @@ void setup_app(void)
 	// Save LoRaWAN settings
 	api_set_credentials();
 
+	// Set Application version
+	snprintf(g_custom_fw_ver, 63, "WisBlock Mesh V%d.%d.%d", SW_VERSION_1, SW_VERSION_2, SW_VERSION_3);
+
 #ifdef NRF52_SERIES
 	// Enable BLE
 	g_enable_ble = true;
@@ -97,17 +106,35 @@ bool init_app(void)
 	init_user_at();
 	read_master_node();
 
-	Serial.println("***************************************************************");
+	has_rak1921 = init_rak1921();
+
+	float batt = read_batt();
+	for (int rd_lp = 0; rd_lp < 10; rd_lp++)
+	{
+		batt += read_batt();
+		batt = batt / 2;
+	}
+	if (has_rak1921)
+	{
+		sprintf(line_str, "RUI3 Mesh - B %.2fV", batt / 1000);
+		rak1921_write_header(line_str);
+	}
+	else
+	{
+		MYLOG("APP", "No OLED found");
+	}
+
+	Serial.println("*****************************************");
 	Serial.println("WisBlock API Mesh");
-	Serial.println("***************************************************************");
-	Serial.println("** All mesh nodes MUST be set to the same                    **");
-	Serial.println("** LoRa frequency                                            **");
-	Serial.println("** Bandwidth                                                 **");
-	Serial.println("** Spreading factor                                          **");
-	Serial.println("** Coding rate                                               **");
-	Serial.println("** Preamble length                                           **");
-	Serial.println("** Symbol timeout                                            **");
-	Serial.println("***************************************************************");
+	Serial.println("*****************************************");
+	Serial.println("** All mesh nodes MUST be set to the same");
+	Serial.println("** LoRa frequency                        ");
+	Serial.println("** Bandwidth                             ");
+	Serial.println("** Spreading factor                      ");
+	Serial.println("** Coding rate                           ");
+	Serial.println("** Preamble length                       ");
+	Serial.println("** Symbol timeout                        ");
+	Serial.println("*****************************************");
 
 	g_mesh_events.data_avail_cb = on_mesh_data;
 	g_mesh_events.map_changed_cb = map_changed_cb;
@@ -135,6 +162,8 @@ void app_event_handler(void)
 	{
 		g_task_event_type &= N_STATUS;
 		MYLOG("APP", "Timer wakeup");
+
+		print_mesh_map_oled();
 
 		// Create a dummy data packet with 3x 64bit counter value
 		msg_cnt++;
@@ -280,6 +309,8 @@ void lora_data_handler(void)
 
 		// Call Mesh TX callback to check if further actions are required
 		mesh_check_tx();
+
+		print_mesh_map_oled();
 	}
 
 	// LoRa data handling
@@ -290,6 +321,8 @@ void lora_data_handler(void)
 
 		// Call Mesh RX callback to analyze the received package
 		mesh_check_rx(g_rx_lora_data, g_rx_data_len, g_last_rssi, g_last_snr);
+
+		print_mesh_map_oled();
 	}
 }
 

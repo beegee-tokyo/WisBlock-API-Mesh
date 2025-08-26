@@ -85,6 +85,7 @@ void mesh_check_rx(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr);
 void mesh_check_tx(void);
 bool add_send_request(data_msg_s *package, uint8_t msg_size);
 void print_mesh_map(void);
+void print_mesh_map_oled(void);
 bool send_to_mesh(bool is_broadcast, uint32_t target_addr, uint8_t *tx_data, uint8_t data_size);
 bool send_map_request();
 extern TaskHandle_t mesh_task_handle;

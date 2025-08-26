@@ -28,8 +28,13 @@ volatile xQueueHandle mesh_msg_queue;
 /** Semaphore for Mesh task wakeup */
 SemaphoreHandle_t mesh_task_wakeup_signal;
 
+#ifdef NRF52_SERIES
 /** Timer for network map sync */
 SoftwareTimer map_sync_timer;
+#endif
+#if defined ARDUINO_RAKWIRELESS_RAK11300
+TimerEvent_t map_sync_timer;
+#endif
 
 /** Event flag for Mesh Task */
 volatile uint16_t mesh_event;
@@ -97,6 +102,7 @@ int g_num_of_nodes = 0;
 /** Flag if the nodes map has changed */
 boolean nodes_changed = false;
 
+#ifdef NRF52_SERIES
 /**
  * @brief Callback for Mesh Map Update Timer
  *
@@ -107,6 +113,20 @@ void map_sync_handler(TimerHandle_t unused)
 	mesh_event |= SYNC_MAP;
 	xSemaphoreGive(mesh_task_wakeup_signal);
 }
+#endif
+
+#ifdef ARDUINO_RAKWIRELESS_RAK11300
+/**
+ * @brief Callback for Mesh Map Update Timer
+ *
+ * @param unused
+ */
+void map_sync_handler(void)
+{
+	mesh_event |= SYNC_MAP;
+	xSemaphoreGive(mesh_task_wakeup_signal);
+}
+#endif
 
 /**
  * @brief Initialize the Mesh network
@@ -191,9 +211,18 @@ void init_mesh(mesh_events_s *events)
 		MYLOG("MESH", "Starting Mesh Sync Task success");
 	}
 
+#ifdef NRF52_SERIES
 	map_sync_timer.begin(sync_time, map_sync_handler, NULL, false);
 	map_sync_timer.start();
-
+#endif
+#ifdef ARDUINO_RAKWIRELESS_RAK11300
+	g_task_wakeup_timer.oneShot = false;
+	g_task_wakeup_timer.ReloadValue = sync_time;
+	g_task_wakeup_timer.Callback = map_sync_handler;
+	TimerInit(&map_sync_timer, map_sync_handler);
+	TimerSetValue(&map_sync_timer, sync_time);
+	TimerStart(&map_sync_timer);
+#endif
 	// Wake up task to handle request for nodes map
 	mesh_event |= SYNC_MAP;
 	xSemaphoreGive(mesh_task_wakeup_signal);
@@ -293,9 +322,16 @@ void mesh_task(void *pvParameters)
 					sync_time = DEFAULT_SYNCTIME;
 				}
 
+#ifdef NRF52_SERIES
 				// Restart map sync timer
 				map_sync_timer.setPeriod(sync_time);
 				map_sync_timer.start();
+#endif
+#ifdef ARDUINO_RAKWIRELESS_RAK11300
+				TimerStop(&map_sync_timer);
+				TimerSetValue(&map_sync_timer, sync_time);
+				TimerStart(&map_sync_timer);
+#endif
 			}
 
 			if ((mesh_event & CHECK_QUEUE) == CHECK_QUEUE)
@@ -404,6 +440,8 @@ void mesh_check_rx(uint8_t *rxPayload, uint16_t rxSize, int16_t rxRssi, int8_t r
 		map_msg_s *thisMsg = (map_msg_s *)rx_buffer;
 		data_msg_s *thisDataMsg = (data_msg_s *)rx_buffer;
 
+		MYLOG("MESH", "LoRa Packet received type:%d", thisDataMsg->type);
+
 		if (thisMsg->type == LORA_NODEMAP)
 		{
 			/// \todo for debug make some nodes unreachable
@@ -507,8 +545,8 @@ void mesh_check_rx(uint8_t *rxPayload, uint16_t rxSize, int16_t rxRssi, int8_t r
 		}
 		else if (thisDataMsg->type == LORA_DIRECT)
 		{
-			// MYLOG("MESH", "From %08lX", thisDataMsg->from);
-			// MYLOG("MESH", "Dest %08lX", thisDataMsg->dest);
+			MYLOG("MESH", "From %08lX", thisDataMsg->from);
+			MYLOG("MESH", "Dest %08lX", thisDataMsg->dest);
 
 			if (thisDataMsg->dest == g_this_device_addr)
 			{
@@ -532,6 +570,10 @@ void mesh_check_rx(uint8_t *rxPayload, uint16_t rxSize, int16_t rxRssi, int8_t r
 					{
 						_mesh_events->data_avail_cb(thisDataMsg->orig, thisDataMsg->data, tempSize - DATA_HEADER_SIZE, rxRssi, rxSnr);
 					}
+				}
+				else
+				{
+					MYLOG("MESH", "data_avail_cb not set or _mesh_events == NULL");
 				}
 			}
 			else
@@ -570,6 +612,10 @@ void mesh_check_rx(uint8_t *rxPayload, uint16_t rxSize, int16_t rxRssi, int8_t r
 					{
 						_mesh_events->data_avail_cb(thisDataMsg->orig, thisDataMsg->data, tempSize - DATA_HEADER_SIZE, rxRssi, rxSnr);
 					}
+				}
+				else
+				{
+					MYLOG("MESH", "data_avail_cb not set or _mesh_events == NULL");
 				}
 			}
 			else
@@ -653,6 +699,10 @@ void mesh_check_rx(uint8_t *rxPayload, uint16_t rxSize, int16_t rxRssi, int8_t r
 			{
 				_mesh_events->data_avail_cb(thisDataMsg->from, thisDataMsg->data, tempSize - DATA_HEADER_SIZE, rxRssi, rxSnr);
 			}
+			else
+			{
+				MYLOG("MESH", "data_avail_cb not set or _mesh_events == NULL");
+			}
 			// Check if we know that node
 			if (!check_node(thisDataMsg->from))
 			{
@@ -690,7 +740,7 @@ void mesh_check_rx(uint8_t *rxPayload, uint16_t rxSize, int16_t rxRssi, int8_t r
 	}
 	else
 	{
-		// MYLOG("MESH", "Invalid package");
+		MYLOG("MESH", "Invalid package");
 		for (int idx = 0; idx < tempSize; idx++)
 		{
 			Serial.printf("%02X ", rx_buffer[idx]);
@@ -841,6 +891,83 @@ void print_mesh_map(void)
 }
 
 /**
+ * @brief Print map to an OLED display
+ *
+ */
+void print_mesh_map_oled(void)
+{
+	if (has_rak1921)
+	{
+		MYLOG("MESH", "Print map to OLED");
+		/** Node ID of the selected receiver node */
+		uint32_t node_id[48];
+		/** First hop ID of the selected receiver node */
+		uint32_t first_hop[48];
+		/** Number of hops to the selected receiver node */
+		uint8_t num_hops[48];
+		/** Number of nodes in the map */
+		uint8_t num_elements;
+
+		if (xSemaphoreTake(access_node_list_sem, (TickType_t)1000) == pdTRUE)
+		{
+			/** Number of nodes in the map */
+			num_elements = nodes_in_map();
+
+			for (int idx = 0; idx < num_elements; idx++)
+			{
+				get_node(idx, node_id[idx], first_hop[idx], num_hops[idx]);
+			}
+			// Release access to nodes list
+			xSemaphoreGive(access_node_list_sem);
+
+			// Display the nodes
+			rak1921_clear();
+
+			float batt = read_batt();
+			for (int rd_lp = 0; rd_lp < 10; rd_lp++)
+			{
+				batt += read_batt();
+				batt = batt / 2;
+			}
+			sprintf(line_str, "Node %08lX - B %.2fV", g_this_device_addr, batt / 1000);
+			rak1921_write_header(line_str);
+
+			if (num_elements > 10)
+			{
+				num_elements = 10;
+			}
+
+			int16_t line = 0;
+			for (int idx = 0; idx < num_elements; idx += 2)
+			{
+				// sprintf(line_str, "%08lX %s", node_id[idx], (first_hop[idx] == 0) ? "d" : "h");
+
+				if ((idx + 1) < num_elements)
+				{
+					// sprintf(line_str, "%08lX %s - %08lX %s", node_id[idx], (first_hop[idx] == 0) ? "<" : ">",
+					// 		node_id[idx + 1], (first_hop[idx + 1] == 0) ? "<" : ">");
+					sprintf(line_str, "%08lX %s", node_id[idx], (first_hop[idx] == 0) ? "^" : ">");
+					rak1921_write_line(line, 0, line_str);
+					sprintf(line_str, "%08lX %s", node_id[idx + 1], (first_hop[idx + 1] == 0) ? "^" : ">");
+					rak1921_write_line(line, 64, line_str);
+				}
+				else
+				{
+					sprintf(line_str, "%08lX %s", node_id[idx], (first_hop[idx] == 0) ? "^" : ">");
+					rak1921_write_line(line, 0, line_str);
+				}
+				line++;
+			}
+			rak1921_display();
+		}
+		else
+		{
+			AT_PRINTF("Could not access the nodes list");
+		}
+	}
+}
+
+/**
  * @brief Enqueue data to be send over the Mesh Network
  *
  * @param is_broadcast if true, send as broadcast
@@ -887,11 +1014,13 @@ bool send_to_mesh(bool is_broadcast, uint32_t target_addr, uint8_t *tx_data, uin
 		if (!add_send_request(&out_data_buffer, dataLen))
 		{
 			MYLOG("MESH", "Sending package failed");
+#ifdef NRF52_SERIES
 			if (g_ble_uart_is_connected)
 			{
 				snprintf(data_buffer, 512, "Sending package failed\n");
 				g_ble_uart.println(data_buffer);
 			}
+#endif
 		}
 	}
 	else // direct message
@@ -914,11 +1043,13 @@ bool send_to_mesh(bool is_broadcast, uint32_t target_addr, uint8_t *tx_data, uin
 		if (!add_send_request(&out_data_buffer, dataLen))
 		{
 			MYLOG("MESH", "Sending package failed");
+#ifdef NRF52_SERIES
 			if (g_ble_uart_is_connected)
 			{
 				snprintf(data_buffer, 512, "Sending package failed\n");
 				g_ble_uart.println(data_buffer);
 			}
+#endif
 			return false;
 		}
 		// else
@@ -936,7 +1067,7 @@ bool send_to_mesh(bool is_broadcast, uint32_t target_addr, uint8_t *tx_data, uin
 
 /**
  * @brief Send a map sync request as a broadcast message
- * 
+ *
  * @return true if enqueued
  * @return false if queue is full
  */
@@ -965,11 +1096,13 @@ bool send_map_request()
 	if (!add_send_request(&out_data_buffer, dataLen))
 	{
 		MYLOG("MESH", "Sending package failed");
+#ifdef NRF52_SERIES
 		if (g_ble_uart_is_connected)
 		{
 			// snprintf(data_buffer, 512, "Sending package failed\n");
 			g_ble_uart.println("Sending package failed\n");
 		}
+#endif
 		return false;
 	}
 	return true;

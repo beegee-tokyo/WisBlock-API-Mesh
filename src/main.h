@@ -19,6 +19,7 @@
 #define MY_DEBUG 0
 #endif
 
+#ifdef NRF52_SERIES
 #if MY_DEBUG > 0
 #define MYLOG(tag, ...)                     \
 	do                                      \
@@ -36,6 +37,22 @@
 	} while (0)
 #else
 #define MYLOG(...)
+#endif
+#endif
+
+#if defined ARDUINO_RAKWIRELESS_RAK11300 || defined ESP32
+#if MY_DEBUG > 0
+#define MYLOG(tag, ...)                  \
+	do                                   \
+	{                                    \
+		if (tag)                         \
+			Serial.printf("[%s] ", tag); \
+		Serial.printf(__VA_ARGS__);      \
+		Serial.printf("\n");             \
+	} while (0)
+#else
+#define MYLOG(...)
+#endif
 #endif
 
 // Generic data buffer
@@ -66,5 +83,17 @@ int at_query_mesh(void);
 void read_master_node(void);
 void save_master_node(void);
 void init_user_at(void);
+
+// OLED
+#include <nRF_SSD1306Wire.h>
+bool init_rak1921(void);
+void rak1921_add_line(char *line);
+void rak1921_show(void);
+void rak1921_write_header(char *header_line);
+void rak1921_clear(void);
+void rak1921_write_line(int16_t line, int16_t y_pos, String text);
+void rak1921_display(void);
+extern char line_str[];
+extern bool has_rak1921;
 
 #endif /* MAIN_H */
