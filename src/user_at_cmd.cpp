@@ -230,4 +230,6 @@ void init_user_at(void)
 	// memcpy((void *)&g_user_at_cmd_list[index_next_cmds], (void *)g_user_at_cmd_list_mesh, sizeof(g_user_at_cmd_list_mesh));
 	// index_next_cmds += sizeof(g_user_at_cmd_list_mesh) / sizeof(atcmd_t);
 	// MYLOG("USR_AT", "Index after adding Mesh ccommands %d", index_next_cmds);
+
+	has_custom_at = true;
 }
